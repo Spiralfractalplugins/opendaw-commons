@@ -1,0 +1,14 @@
+{
+  "name": "Device Panel Demo",
+  "description": "Simple Sine with a page of its own: a compact view in the openDAW device panel that opens the big window, the window alone in every other host.",
+  "author": {
+    "name": "André Michelle",
+    "github": "andremichelle"
+  },
+  "tags": [
+    "synth",
+    "example"
+  ],
+  "license": "CC0-1.0",
+  "credits": "Built on the CLAP headers by free-audio (MIT)."
+}

@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en" translate="no">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Device Panel Demo</title>
+    <style>
+        :root {
+            --background: #1e2124;
+            --surface: #2a2e33;
+            --text: #c8ccd0;
+            --dim: #6c737a;
+            --accent: #4fa3e0;
+        }
+        * {box-sizing: border-box}
+        html, body {margin: 0; height: 100%; overflow: hidden}
+        body {
+            display: grid;
+            font: 11px/1.4 system-ui, sans-serif;
+            color: var(--text);
+            background: var(--background);
+            user-select: none;
+        }
+        h1 {margin: 0; font-size: 11px; font-weight: 500; letter-spacing: 0.03em; color: var(--dim)}
+        .voices {display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px}
+        .voices > span {aspect-ratio: 1; border-radius: 2px; background: var(--surface)}
+        .voices > span.active {background: var(--accent)}
+        .fader {position: relative; border-radius: 3px; background: var(--surface); cursor: ns-resize; touch-action: none}
+        .fader > div {position: absolute; inset: auto 0 0 0; border-radius: 3px; background: var(--accent)}
+        .value {font-variant-numeric: tabular-nums; text-align: center}
+        button {
+            font: inherit;
+            color: var(--text);
+            background: var(--surface);
+            border: none;
+            border-radius: 3px;
+            padding: 4px 0;
+            cursor: pointer;
+        }
+        button:hover {color: var(--accent)}
+        body.panel {grid-template-rows: auto 1fr auto auto auto; gap: 6px; padding: 6px}
+        body.window {grid-template: auto 1fr auto / 1fr 64px; gap: 12px; padding: 16px; font-size: 13px}
+        body.window h1 {grid-column: 1 / -1; font-size: 13px}
+        body.window .voices {align-self: end; gap: 6px}
+        body.window .fader {grid-row: 2 / 4; grid-column: 2}
+        body.window .close {grid-column: 1; justify-self: start; padding: 4px 12px}
+    </style>
+</head>
+<body>
+<h1>Device Panel Demo</h1>
+<div class="fader"><div></div></div>
+<div class="value"></div>
+<div class="voices"></div>
+<button class="open">Big View</button>
+<button class="close">Close</button>
+<script>
+    // message types, see panel.c
+    const PAGE_POLL = 1, PAGE_PARAM_BEGIN = 2, PAGE_PARAM_SET = 3, PAGE_PARAM_END = 4, PAGE_OPEN_WINDOW = 5,
+        PAGE_CLOSE_WINDOW = 6, PAGE_HOVER = 7
+    const PLUGIN_STATUS = 1
+    const PARAM_GAIN = 0, INVALID_ID = 0xffffffff
+    const panel = new URLSearchParams(location.search).has("panel")
+    document.body.classList.add(panel ? "panel" : "window")
+    const fader = document.querySelector(".fader")
+    const level = fader.firstElementChild
+    const valueLabel = document.querySelector(".value")
+    const voices = document.querySelector(".voices")
+    const openButton = document.querySelector(".open")
+    const closeButton = document.querySelector(".close")
+    const leds = Array.from({length: 16}, () => voices.appendChild(document.createElement("span")))
+    const state = {gain: 0, dragging: false}
+    const post = bytes => window.parent.postMessage(bytes.buffer, "*")
+    const postParam = (type, value) => {
+        const message = new DataView(new ArrayBuffer(type === PAGE_PARAM_SET ? 16 : 8))
+        message.setUint8(0, type)
+        message.setUint32(4, PARAM_GAIN, true)
+        if (type === PAGE_PARAM_SET) {message.setFloat64(8, value, true)}
+        post(new Uint8Array(message.buffer))
+    }
+    const showGain = gain => {
+        level.style.height = `${gain * 100}%`
+        valueLabel.textContent = `${Math.round(gain * 100)}%`
+    }
+    const gainAt = event => {
+        const bounds = fader.getBoundingClientRect()
+        return Math.min(1, Math.max(0, 1 - (event.clientY - bounds.top) / bounds.height))
+    }
+    // clap.param-hovered: the host then offers its parameter menu on right-click and value entry on double-click
+    const hover = id => {
+        const message = new DataView(new ArrayBuffer(8))
+        message.setUint8(0, PAGE_HOVER)
+        message.setUint32(4, id, true)
+        post(new Uint8Array(message.buffer))
+    }
+    fader.addEventListener("pointerenter", () => hover(PARAM_GAIN))
+    fader.addEventListener("pointerleave", () => hover(INVALID_ID))
+    fader.addEventListener("pointerdown", event => {
+        // ctrl+click is the context click on macOS, it arrives as button 0
+        if (event.button !== 0 || event.ctrlKey) {return}
+        fader.setPointerCapture(event.pointerId)
+        state.dragging = true
+        postParam(PAGE_PARAM_BEGIN)
+        state.gain = gainAt(event)
+        postParam(PAGE_PARAM_SET, state.gain)
+        showGain(state.gain)
+    })
+    fader.addEventListener("pointermove", event => {
+        if (!state.dragging) {return}
+        state.gain = gainAt(event)
+        postParam(PAGE_PARAM_SET, state.gain)
+        showGain(state.gain)
+    })
+    const release = () => {
+        if (!state.dragging) {return}
+        state.dragging = false
+        postParam(PAGE_PARAM_END)
+    }
+    fader.addEventListener("pointerup", release)
+    fader.addEventListener("lostpointercapture", release)
+    if (panel) {
+        openButton.addEventListener("click", () => post(new Uint8Array([PAGE_OPEN_WINDOW])))
+        closeButton.remove()
+    } else {
+        closeButton.addEventListener("click", () => post(new Uint8Array([PAGE_CLOSE_WINDOW])))
+        openButton.remove()
+    }
+    window.addEventListener("message", event => {
+        if (!(event.data instanceof ArrayBuffer)) {return}
+        const view = new DataView(event.data)
+        if (view.byteLength < 16 || view.getUint8(0) !== PLUGIN_STATUS) {return}
+        const active = view.getUint8(1)
+        leds.forEach((led, index) => led.classList.toggle("active", index < active))
+        if (!state.dragging) {showGain(view.getFloat64(8, true))}
+    })
+    const poll = () => {
+        post(new Uint8Array([PAGE_POLL]))
+        requestAnimationFrame(poll)
+    }
+    poll()
+</script>
+</body>
+</html>
