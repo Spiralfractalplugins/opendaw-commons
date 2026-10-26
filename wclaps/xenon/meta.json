@@ -1,0 +1,8 @@
+{
+  "name": "Xenon",
+  "description": "A granular synthesizer around a glowing waveform. Drop a sample on it, grains read it with their own pitch, envelope and filter and sound from their own place in 3D: azimuth, elevation, distance, motion and a room. Two LFOs, two envelopes, per-grain random, velocity, key, mod wheel, pressure and grain age modulate every grain parameter. Fits openDAW's device panel.",
+  "author": {"name": "André Michelle", "github": "andremichelle"},
+  "tags": ["synth", "granular", "sampler", "spatial"],
+  "license": "MIT",
+  "credits": "Built on the CLAP headers by free-audio (MIT)."
+}
