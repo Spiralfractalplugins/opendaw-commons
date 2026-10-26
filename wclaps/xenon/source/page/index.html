@@ -52,7 +52,7 @@
     const PLUGIN_STATUS = 1, PLUGIN_PEAKS = 2, PLUGIN_MODS = 3
     const INVALID_ID = 0xffffffff, STATUS_HEADER = 24, GRAIN_FLOATS = 5
     const RATE = 48000, MAX_SECONDS = 60, CHUNK_FRAMES = 32768
-    const WIDTH = 512, HEIGHT = 176, WAVE_HEIGHT = 104, COLUMN = 64, TABS_HEIGHT = 14
+    const WIDTH = 512, HEIGHT = 176, WAVE_HEIGHT = 104, COLUMN = 64, TABS_HEIGHT = 23, TAB_Y = 17, PARAM_Y = 24
     // the waveform inside its frame
     const DISPLAY_WIDTH = 504, DISPLAY_HEIGHT = 96
     const CYAN = [0.18, 0.9, 1.0]
@@ -424,18 +424,18 @@ void main() {
         SECTIONS.forEach(({name}, index) => {
             const active = index === state.section
             context.fillStyle = active ? BRIGHT : DIM
-            context.fillText(name, tabs[index].x, 9)
+            context.fillText(name, tabs[index].x, TAB_Y)
         })
         context.letterSpacing = "0.6px"
         SOURCES.forEach((source, index) => {
             const armed = index === state.armed
             const used = state.depths.some(row => row[index] !== 0)
             context.fillStyle = armed ? BRIGHT : used ? "#9a9da3" : DIM
-            context.fillText(source.label, sources[index].x, 9)
+            context.fillText(source.label, sources[index].x, TAB_Y)
             context.fillStyle = source.color
             context.globalAlpha = armed || used ? 1 : 0.45
             context.beginPath()
-            context.arc(sources[index].x - 4, 6.5, armed ? 1.8 : 1.2, 0, Math.PI * 2)
+            context.arc(sources[index].x - 4, TAB_Y - 2.5, armed ? 1.8 : 1.2, 0, Math.PI * 2)
             context.fill()
             context.globalAlpha = 1
         })
@@ -454,7 +454,7 @@ void main() {
         context.globalAlpha = assignable ? 1 : 0.3
         context.font = "500 7px system-ui"
         context.fillStyle = highlighted ? BRIGHT : DIM
-        context.fillText(param.label, center, TABS_HEIGHT + 10)
+        context.fillText(param.label, center, PARAM_Y + 10)
         const [number, suffix] = param.text(value)
         context.font = "300 16px system-ui"
         const numberWidth = context.measureText(number).width
@@ -464,18 +464,18 @@ void main() {
         context.textAlign = "left"
         context.font = "300 16px system-ui"
         context.fillStyle = BRIGHT
-        context.fillText(number, left, TABS_HEIGHT + 29)
+        context.fillText(number, left, PARAM_Y + 29)
         if (suffix !== "") {
             context.font = "500 6px system-ui"
             context.fillStyle = DIM
-            context.fillText(suffix, left + numberWidth + 2, TABS_HEIGHT + 29)
+            context.fillText(suffix, left + numberWidth + 2, PARAM_Y + 29)
         }
         context.textAlign = "center"
         const lit = Math.round(normal * 8)
         for (let index = 0; index <= 8; index++) {
             context.fillStyle = index <= lit ? BRIGHT : FAINT
             context.beginPath()
-            context.arc(center - 16 + index * 4, TABS_HEIGHT + 39, index === lit ? 1.4 : 1, 0, Math.PI * 2)
+            context.arc(center - 16 + index * 4, PARAM_Y + 39, index === lit ? 1.4 : 1, 0, Math.PI * 2)
             context.fill()
         }
         if (param.mod === true) {drawModulation(id, center, normal)}
@@ -483,7 +483,7 @@ void main() {
     }
     const dotX = (center, normal) => center - 16 + Math.min(1, Math.max(0, normal)) * 32
     const drawModulation = (id, center, normal) => {
-        const y = TABS_HEIGHT + 45
+        const y = PARAM_Y + 45
         if (state.armed >= 0) {
             const depth = state.depths[id][state.armed]
             if (depth === 0) {return}
