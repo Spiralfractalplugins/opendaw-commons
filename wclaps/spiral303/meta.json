@@ -1,0 +1,8 @@
+{
+  "name": "Spiral303",
+  "description": "A Roland TB-303 acid line: a morphing oscillator, a note-envelope swept contour filter with eight models, one of them a formant bank that pronounces a vowel as you turn Cutoff, accent, glide and a 16-step sequencer where every step carries a tie, a slide and an accent, plus tape and tube saturation, a tempo-synced delay, a small room and analogue drift. The interface sits in the device panel and its sequencer grid takes mouse and keys.",
+  "author": {"name": "Spiralfractal", "github": "Spiralfractalplugins"},
+  "tags": ["synth", "bass", "acid", "lead", "sequencer", "monophonic", "303"],
+  "license": "GPL-3.0-only",
+  "credits": "CLAP headers by free-audio (MIT). The DSP core is the author's own, bit-exact with the native VST3/AU/CLAP plugin; the WebAssembly build replaces JUCE with a small in-house stand-in."
+}
