@@ -1,0 +1,8 @@
+{
+  "name": "Glitchfest",
+  "description": "A glitch effect on the project's transport. Twelve rows: stutter, shuffle, reverse, scratch, freeze, tape stop and start, pitch, crush, filter sweep, gate, pan and an echo throw. Draw blocks into four patterns, give each a chance and a ramp, chain the patterns in an eight slot sequence or roll the dice. Fits openDAW's device panel.",
+  "author": {"name": "André Michelle", "github": "andremichelle"},
+  "tags": ["glitch", "stutter", "sequencer", "effect"],
+  "license": "MIT",
+  "credits": "Built on the CLAP headers by free-audio (MIT)."
+}

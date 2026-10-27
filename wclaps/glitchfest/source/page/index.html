@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="en" translate="no">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Glitchfest</title>
+    <style>
+        html, body {margin: 0; height: 100%; overflow: hidden; background: transparent}
+        body {user-select: none; -webkit-user-select: none; font-family: system-ui, sans-serif}
+        #root {position: absolute; left: 0; top: 0; width: 236px; height: 176px; transform-origin: 0 0}
+        canvas {position: absolute; left: 0; top: 0; width: 236px; height: 176px; display: block; touch-action: none}
+    </style>
+</head>
+<body>
+<div id="root">
+    <canvas></canvas>
+</div>
+<script>
+    // message types, see plugin/glitchfest.cpp
+    const PAGE_POLL = 1, PAGE_PARAM_BEGIN = 2, PAGE_PARAM_SET = 3, PAGE_PARAM_END = 4, PAGE_HOVER = 5, PAGE_SET_ROW = 6,
+        PAGE_SET_SEQUENCE = 7, PAGE_REQUEST_PATTERNS = 8
+    const PLUGIN_STATUS = 1, PLUGIN_PATTERNS = 2
+    const INVALID_ID = 0xffffffff, STATUS_HEADER = 24, PATTERNS_HEADER = 16
+    const WIDTH = 236, HEIGHT = 176, LABEL = 40, COL = 6, COLUMNS = 32, ROW = 12, ROWS = 12, PATTERNS = 4, SLOTS = 8
+    const STRIP = 14, ROWS_Y = STRIP + 2, BAR_Y = ROWS_Y + ROWS * ROW, SLOT = COLUMNS * COL / SLOTS, CELLS = 4, CELL = WIDTH / CELLS
+    const ROW_BYTES = 4 + COLUMNS * 4
+    const COLORS = {
+        background: "hsl(197, 14%, 12%)", cell: "hsl(197, 13%, 16%)", beat: "hsl(197, 14%, 20%)",
+        label: "hsl(197, 31%, 70%)", text: "hsl(197, 5%, 100%)", block: [189, 100, 65]
+    }
+    const PATTERN_NAMES = ["A", "B", "C", "D"]
+
+    const percent = value => `${Math.round(value * 100)}`
+    const choice = texts => value => texts[Math.round(value)]
+    const ms = value => value >= 100 ? `${(value / 1000).toFixed(2)}s` : `${Math.round(value)}ms`
+    const P_MIX = 0, P_LENGTH = 1, P_DICE = 2
+    // the plugin's table (plugin/glitchfest.cpp), ids are the indices
+    const PARAMS = [
+        {label: "Mix", min: 0, max: 1, curve: "linear", value: 1, text: percent},
+        {label: "Len", min: 0, max: 2, curve: "step", value: 0, text: choice(["1 bar", "2 bars", "4 bars"])},
+        {label: "Dice", min: 0, max: 1, curve: "linear", value: 0.35, text: percent},
+        {label: "Div", min: 0, max: 4, curve: "step", value: 2, text: choice(["1/4", "1/8", "1/16", "1/32", "1/64"])},
+        {label: "Decay", min: 0, max: 1, curve: "linear", value: 0.4, text: percent},
+        {label: "Slice", min: 0, max: 3, curve: "step", value: 1, text: choice(["1/4", "1/8", "1/16", "1/32"])},
+        {label: "Seed", min: 0, max: 99, curve: "step", value: 17, text: value => `${Math.round(value)}`},
+        {label: "Size", min: 0, max: 3, curve: "step", value: 1, text: choice(["1/2", "1/4", "1/8", "1/16"])},
+        {label: "Fade", min: 1, max: 50, curve: "exp", value: 8, text: ms},
+        {label: "Rate", min: 0.25, max: 4, curve: "exp", value: 1, text: value => value.toFixed(2)},
+        {label: "Depth", min: 0, max: 1, curve: "linear", value: 0.6, text: percent},
+        {label: "Size", min: 10, max: 500, curve: "exp", value: 60, text: ms},
+        {label: "Jitter", min: 0, max: 1, curve: "linear", value: 0.3, text: percent},
+        {label: "Mode", min: 0, max: 1, curve: "step", value: 0, text: choice(["stop", "start"])},
+        {label: "Curve", min: 0, max: 1, curve: "linear", value: 0.5, text: percent},
+        {label: "Semi", min: -24, max: 24, curve: "step", value: -12, text: value => `${value > 0 ? "+" : ""}${Math.round(value)}`},
+        {label: "Glide", min: 0, max: 1, curve: "linear", value: 0, text: percent},
+        {label: "Bits", min: 1, max: 16, curve: "step", value: 6, text: value => `${Math.round(value)}`},
+        {label: "Rate", min: 500, max: 48000, curve: "exp", value: 8000,
+            text: value => value >= 1000 ? `${(value / 1000).toFixed(value >= 10000 ? 0 : 1).replace(/\.0$/, "")}k` : `${Math.round(value)}`},
+        {label: "Dir", min: 0, max: 1, curve: "step", value: 0, text: choice(["down", "up"])},
+        {label: "Reso", min: 0, max: 1, curve: "linear", value: 0.7, text: percent},
+        {label: "Div", min: 0, max: 3, curve: "step", value: 2, text: choice(["1/8", "1/16", "1/32", "1/64"])},
+        {label: "Duty", min: 0, max: 1, curve: "linear", value: 0.5, text: percent},
+        {label: "Rate", min: 0, max: 3, curve: "step", value: 2, text: choice(["1/2", "1/4", "1/8", "1/16"])},
+        {label: "Width", min: 0, max: 1, curve: "linear", value: 1, text: percent},
+        {label: "Time", min: 0, max: 4, curve: "step", value: 2, text: choice(["1/16", "1/8", "3/16", "1/4", "3/8"])},
+        {label: "Fbk", min: 0, max: 0.95, curve: "linear", value: 0.55, text: percent}
+    ]
+    const EFFECTS = ["Stutter", "Shuffle", "Reverse", "Scratch", "Freeze", "Tape", "Pitch", "Crush", "Filter", "Gate", "Pan", "Throw"]
+    const firstParam = row => 3 + row * 2
+
+    const normalize = (id, value) => {
+        const {min, max, curve} = PARAMS[id]
+        const clamped = Math.min(max, Math.max(min, value))
+        return curve === "exp" ? Math.log(clamped / min) / Math.log(max / min) : (clamped - min) / (max - min)
+    }
+    const denormalize = (id, normal) => {
+        const {min, max, curve} = PARAMS[id]
+        const clamped = Math.min(1, Math.max(0, normal))
+        const value = curve === "exp" ? min * Math.pow(max / min, clamped) : min + clamped * (max - min)
+        return curve === "step" ? Math.round(value) : value
+    }
+
+    const root = document.getElementById("root")
+    const canvas = document.querySelector("canvas")
+    const context = canvas.getContext("2d")
+    const emptyPatterns = () => Array.from({length: PATTERNS}, () => Array.from({length: ROWS}, () => []))
+    const state = {
+        values: PARAMS.map(({value}) => value), patterns: emptyPatterns(), sequence: new Array(SLOTS).fill(0),
+        generation: -1, requested: false, playing: false, slot: 0, column: 0,
+        editPattern: 0, selectedRow: 0, selected: null, drag: null, hovered: INVALID_ID, scale: 1, ratio: 0
+    }
+
+    const post = buffer => window.parent.postMessage(buffer, "*")
+    const postParam = (type, id, value) => {
+        const message = new DataView(new ArrayBuffer(type === PAGE_PARAM_SET ? 16 : 8))
+        message.setUint8(0, type)
+        message.setUint32(4, id, true)
+        if (type === PAGE_PARAM_SET) {message.setFloat64(8, value, true)}
+        post(message.buffer)
+    }
+    const hover = id => {
+        if (state.hovered === id) {return}
+        state.hovered = id
+        const message = new DataView(new ArrayBuffer(8))
+        message.setUint8(0, PAGE_HOVER)
+        message.setUint32(4, id, true)
+        post(message.buffer)
+    }
+    const setValue = (id, value) => {
+        const next = Math.min(PARAMS[id].max, Math.max(PARAMS[id].min, value))
+        if (next === state.values[id]) {return}
+        state.values[id] = next
+        postParam(PAGE_PARAM_SET, id, next)
+    }
+    const postRow = (pattern, row) => {
+        const blocks = state.patterns[pattern][row]
+        const message = new Uint8Array(8 + blocks.length * 4)
+        message.set([PAGE_SET_ROW, 0, 0, 0, pattern, row, blocks.length, 0])
+        blocks.forEach((block, index) => message.set([block.start, block.length, block.chance, block.ramp], 8 + index * 4))
+        post(message.buffer)
+    }
+    const postSequence = () => {
+        const message = new Int8Array(4 + SLOTS)
+        message[0] = PAGE_SET_SEQUENCE
+        message.set(state.sequence, 4)
+        post(message.buffer)
+    }
+
+    // ---- blocks ----
+
+    const rowBlocks = row => state.patterns[state.editPattern][row]
+    const blockAt = (row, column) => rowBlocks(row).find(block => column >= block.start && column < block.start + block.length)
+    const selectedBlock = () => {
+        const selected = state.selected
+        if (selected === null || selected.pattern !== state.editPattern) {return null}
+        return state.patterns[selected.pattern][selected.row].includes(selected.block) ? selected.block : null
+    }
+    const select = (row, block) => {state.selected = block === null ? null : {pattern: state.editPattern, row, block}}
+    const sortRow = row => rowBlocks(row).sort((a, b) => a.start - b.start)
+    // the free columns around a block on its row
+    const freeRange = (row, block) => {
+        const others = rowBlocks(row).filter(other => other !== block)
+        const left = Math.max(0, ...others.filter(other => other.start + other.length <= block.start).map(other => other.start + other.length))
+        const right = Math.min(COLUMNS, ...others.filter(other => other.start >= block.start + block.length).map(other => other.start))
+        return [left, right]
+    }
+    const dice = () => {
+        const density = state.values[P_DICE]
+        for (let row = 0; row < ROWS; row++) {
+            const blocks = []
+            if (Math.random() < 0.2 + density * 0.6) {
+                let column = 0
+                while (column < COLUMNS) {
+                    if (Math.random() < density * 0.3) {
+                        const length = Math.min(COLUMNS - column, [1, 2, 2, 4, 4, 8][Math.floor(Math.random() * 6)])
+                        const chance = Math.random() < 0.25 ? 50 + Math.floor(Math.random() * 5) * 10 : 100
+                        const ramp = Math.random() < 0.2 ? 50 + Math.floor(Math.random() * 6) * 10 : 0
+                        blocks.push({start: column, length, chance, ramp})
+                        column += length + (Math.random() < 0.5 ? 2 : 1)
+                    } else {
+                        column += 2
+                    }
+                }
+            }
+            state.patterns[state.editPattern][row] = blocks
+            postRow(state.editPattern, row)
+        }
+        state.selected = null
+    }
+
+    // ---- drawing ----
+
+    const blockColor = alpha => `hsla(${COLORS.block[0]}, ${COLORS.block[1]}%, ${COLORS.block[2]}%, ${alpha})`
+    const cells = () => {
+        const first = firstParam(state.selectedRow)
+        const block = selectedBlock()
+        const list = [{id: first, lit: true}, {id: first + 1, lit: true}]
+        if (block !== null) {
+            list.push({block: "chance", label: "Prob", text: `${block.chance}`}, {block: "ramp", label: "Ramp", text: `${block.ramp}`})
+        } else {
+            list.push({id: P_LENGTH}, {id: P_DICE})
+        }
+        return list
+    }
+    const draw = () => {
+        const unit = state.scale * state.ratio
+        context.setTransform(unit, 0, 0, unit, 0, 0)
+        context.fillStyle = COLORS.background
+        context.fillRect(0, 0, WIDTH, HEIGHT)
+        context.font = "500 9px system-ui"
+        context.textBaseline = "middle"
+        context.textAlign = "center"
+        const button = LABEL / PATTERNS
+        PATTERN_NAMES.forEach((name, index) => {
+            context.fillStyle = index === state.editPattern ? COLORS.text : COLORS.label
+            context.fillText(name, index * button + button / 2, STRIP / 2 + 0.5)
+        })
+        state.sequence.forEach((pattern, index) => {
+            const x = LABEL + index * SLOT
+            context.fillStyle = state.playing && index === state.slot ? COLORS.beat : COLORS.cell
+            context.fillRect(x, 1, SLOT - 1, STRIP - 2)
+            context.fillStyle = pattern === -1 ? COLORS.label : pattern === state.editPattern ? blockColor(1) : COLORS.text
+            context.fillText(pattern === -1 ? "-" : PATTERN_NAMES[pattern], x + SLOT / 2, STRIP / 2 + 0.5)
+        })
+        context.textAlign = "left"
+        for (let row = 0; row < ROWS; row++) {
+            const y = ROWS_Y + row * ROW
+            context.fillStyle = row === state.selectedRow ? COLORS.text : COLORS.label
+            context.fillText(EFFECTS[row], 4, y + ROW / 2 + 0.5)
+            for (let column = 0; column < COLUMNS; column++) {
+                context.fillStyle = column % 8 === 0 ? COLORS.beat : COLORS.cell
+                context.fillRect(LABEL + column * COL, y + 1, COL - 1, ROW - 2)
+            }
+        }
+        const selected = selectedBlock()
+        state.patterns[state.editPattern].forEach((blocks, row) => blocks.forEach(block => {
+            const x = LABEL + block.start * COL, y = ROWS_Y + row * ROW + 1, w = block.length * COL - 1, h = ROW - 2
+            const slope = Math.min(w / 2, block.ramp / 100 * w / 2)
+            context.fillStyle = blockColor(0.4 + 0.6 * block.chance / 100)
+            context.beginPath()
+            context.moveTo(x, y + h)
+            context.lineTo(x + slope, y)
+            context.lineTo(x + w - slope, y)
+            context.lineTo(x + w, y + h)
+            context.closePath()
+            context.fill()
+            if (block === selected) {
+                context.strokeStyle = COLORS.text
+                context.lineWidth = 1
+                context.stroke()
+            }
+        }))
+        if (state.playing) {
+            context.fillStyle = COLORS.text
+            context.globalAlpha = state.sequence[state.slot] === state.editPattern ? 0.6 : 0.2
+            context.fillRect(LABEL + state.column * COL, ROWS_Y, 1, ROWS * ROW)
+            context.globalAlpha = 1
+        }
+        const line = BAR_Y + (HEIGHT - BAR_Y) / 2 + 1
+        cells().forEach((cell, index) => {
+            const x0 = index * CELL, x1 = x0 + CELL
+            const active = (cell.id !== undefined && (cell.id === state.hovered || state.drag?.id === cell.id)) || (cell.block !== undefined && state.drag?.block === cell.block)
+            context.fillStyle = active ? COLORS.beat : COLORS.cell
+            context.fillRect(x0, BAR_Y + 2, CELL - 1, HEIGHT - BAR_Y - 2)
+            const label = cell.id !== undefined ? PARAMS[cell.id].label : cell.label
+            const text = cell.id !== undefined ? PARAMS[cell.id].text(state.values[cell.id]) : cell.text
+            context.textAlign = "left"
+            context.fillStyle = COLORS.label
+            context.fillText(label, x0 + 4, line)
+            context.textAlign = "right"
+            context.fillStyle = cell.lit === true ? blockColor(1) : COLORS.text
+            context.fillText(text, x1 - 5, line)
+        })
+        context.textAlign = "left"
+    }
+
+    // ---- pointer ----
+
+    const toLocal = event => {
+        const bounds = canvas.getBoundingClientRect()
+        return {x: (event.clientX - bounds.left) / state.scale, y: (event.clientY - bounds.top) / state.scale}
+    }
+    const hit = ({x, y}) => {
+        if (y < STRIP) {
+            return x < LABEL ? {pattern: Math.min(PATTERNS - 1, Math.floor(x / (LABEL / PATTERNS)))}
+                : {slot: Math.min(SLOTS - 1, Math.floor((x - LABEL) / SLOT))}
+        }
+        if (y >= ROWS_Y && y < BAR_Y) {
+            const row = Math.min(ROWS - 1, Math.floor((y - ROWS_Y) / ROW))
+            return x < LABEL ? {label: row} : {row, column: Math.min(COLUMNS - 1, Math.max(0, Math.floor((x - LABEL) / COL)))}
+        }
+        if (y >= BAR_Y) {return {cell: cells()[Math.min(CELLS - 1, Math.floor(x / CELL))]}}
+        return null
+    }
+    const startCell = (cell, event) => {
+        if (cell.id !== undefined) {
+            state.drag = {id: cell.id, startY: event.clientY, start: state.values[cell.id], moved: false}
+            postParam(PAGE_PARAM_BEGIN, cell.id)
+        } else {
+            const block = selectedBlock()
+            if (block === null) {return}
+            state.drag = {block: cell.block, target: block, row: state.selected.row, startY: event.clientY, start: block[cell.block], moved: false}
+        }
+        canvas.setPointerCapture(event.pointerId)
+    }
+    const startGrid = (row, column, event) => {
+        state.selectedRow = row
+        const existing = blockAt(row, column)
+        if (existing !== undefined) {
+            select(row, existing)
+            state.drag = {move: existing, row, grab: column - existing.start, moved: false}
+        } else {
+            const block = {start: column, length: 1, chance: 100, ramp: 0}
+            rowBlocks(row).push(block)
+            sortRow(row)
+            select(row, block)
+            state.drag = {draw: block, row, origin: column, moved: true}
+            postRow(state.editPattern, row)
+        }
+        canvas.setPointerCapture(event.pointerId)
+    }
+    canvas.addEventListener("pointerdown", event => {
+        // ctrl+click is the context click on macOS, it arrives as button 0
+        if (event.button !== 0 || event.ctrlKey) {return}
+        const target = hit(toLocal(event))
+        if (target === null) {return}
+        if (target.pattern !== undefined) {
+            state.editPattern = target.pattern
+            state.selected = null
+        } else if (target.slot !== undefined) {
+            const current = state.sequence[target.slot]
+            state.sequence[target.slot] = current === PATTERNS - 1 ? -1 : current + 1
+            postSequence()
+        } else if (target.label !== undefined) {
+            state.selectedRow = target.label
+            state.selected = null
+        } else if (target.row !== undefined) {
+            startGrid(target.row, target.column, event)
+        } else if (target.cell !== undefined) {
+            startCell(target.cell, event)
+        }
+    })
+    canvas.addEventListener("pointermove", event => {
+        const drag = state.drag
+        const point = toLocal(event)
+        if (drag === null) {
+            const target = hit(point)
+            const id = target?.cell?.id
+            canvas.style.cursor = target === null ? "default" : target.cell !== undefined ? "ns-resize"
+                : target.row !== undefined ? "crosshair" : "pointer"
+            hover(id !== undefined ? id : INVALID_ID)
+            return
+        }
+        const column = Math.min(COLUMNS - 1, Math.max(0, Math.floor((point.x - LABEL) / COL)))
+        if (drag.draw !== undefined) {
+            const block = drag.draw
+            const [previousStart, previousLength] = [block.start, block.length]
+            block.start = drag.origin
+            block.length = 1
+            const [left, right] = freeRange(drag.row, block)
+            const from = Math.max(left, Math.min(drag.origin, column)), to = Math.min(right - 1, Math.max(drag.origin, column))
+            block.start = from
+            block.length = to - from + 1
+            if (block.start !== previousStart || block.length !== previousLength) {
+                sortRow(drag.row)
+                postRow(state.editPattern, drag.row)
+            }
+            return
+        }
+        if (drag.move !== undefined) {
+            const block = drag.move
+            const [left, right] = freeRange(drag.row, block)
+            const start = Math.min(right - block.length, Math.max(left, column - drag.grab))
+            if (start !== block.start) {
+                block.start = start
+                drag.moved = true
+                sortRow(drag.row)
+                postRow(state.editPattern, drag.row)
+            }
+            return
+        }
+        const travel = drag.startY - event.clientY
+        drag.moved = drag.moved || Math.abs(travel) > 2
+        if (drag.block !== undefined) {
+            const value = Math.round(Math.min(100, Math.max(0, drag.start + travel / (event.shiftKey ? 6 : 1.5))))
+            if (value !== drag.target[drag.block]) {
+                drag.target[drag.block] = value
+                postRow(state.editPattern, drag.row)
+            }
+        } else if (PARAMS[drag.id].curve === "step") {
+            setValue(drag.id, drag.start + Math.round(travel / 12))
+        } else {
+            setValue(drag.id, denormalize(drag.id, normalize(drag.id, drag.start) + travel / (event.shiftKey ? 600 : 150)))
+        }
+    })
+    canvas.addEventListener("pointerleave", () => {if (state.drag === null) {hover(INVALID_ID)}})
+    const release = () => {
+        const drag = state.drag
+        if (drag === null) {return}
+        state.drag = null
+        if (drag.id === undefined) {return}
+        // a click without a move steps a choice, Dice rolls a pattern
+        if (!drag.moved && drag.id === P_DICE) {dice()}
+        else if (!drag.moved && PARAMS[drag.id].curve === "step") {
+            const {min, max} = PARAMS[drag.id]
+            setValue(drag.id, state.values[drag.id] >= max ? min : state.values[drag.id] + 1)
+        }
+        postParam(PAGE_PARAM_END, drag.id)
+    }
+    canvas.addEventListener("pointerup", release)
+    canvas.addEventListener("lostpointercapture", release)
+    canvas.addEventListener("dblclick", event => {
+        const target = hit(toLocal(event))
+        if (target === null) {return}
+        if (target.pattern !== undefined) {
+            for (let row = 0; row < ROWS; row++) {
+                state.patterns[target.pattern][row] = []
+                postRow(target.pattern, row)
+            }
+            state.selected = null
+        } else if (target.row !== undefined) {
+            const block = blockAt(target.row, target.column)
+            if (block === undefined) {return}
+            state.patterns[state.editPattern][target.row] = rowBlocks(target.row).filter(other => other !== block)
+            state.selected = null
+            postRow(state.editPattern, target.row)
+        } else if (target.cell?.id !== undefined && target.cell.id !== P_DICE) {
+            const id = target.cell.id
+            postParam(PAGE_PARAM_BEGIN, id)
+            setValue(id, PARAMS[id].value)
+            postParam(PAGE_PARAM_END, id)
+        } else if (target.cell?.block !== undefined) {
+            const block = selectedBlock()
+            if (block === null) {return}
+            block[target.cell.block] = target.cell.block === "chance" ? 100 : 0
+            postRow(state.editPattern, state.selected.row)
+        }
+    })
+    canvas.addEventListener("wheel", event => {
+        const target = hit(toLocal(event))
+        const id = target?.cell?.id
+        if (id === undefined) {return}
+        event.preventDefault()
+        const direction = event.deltaY < 0 ? 1 : event.deltaY > 0 ? -1 : 0
+        if (direction === 0) {return}
+        postParam(PAGE_PARAM_BEGIN, id)
+        setValue(id, PARAMS[id].curve === "step" ? state.values[id] + direction
+            : denormalize(id, normalize(id, state.values[id]) + direction * (event.shiftKey ? 0.002 : 0.02)))
+        postParam(PAGE_PARAM_END, id)
+    }, {passive: false})
+    window.addEventListener("keydown", event => {
+        if (event.key !== "Delete" && event.key !== "Backspace") {return}
+        const block = selectedBlock()
+        if (block === null) {return}
+        const row = state.selected.row
+        state.patterns[state.editPattern][row] = rowBlocks(row).filter(other => other !== block)
+        state.selected = null
+        postRow(state.editPattern, row)
+    })
+
+    // ---- the plugin's messages ----
+
+    window.addEventListener("message", event => {
+        if (!(event.data instanceof ArrayBuffer) || event.data.byteLength < 1) {return}
+        const view = new DataView(event.data)
+        const type = view.getUint8(0)
+        if (type === PLUGIN_STATUS && view.byteLength >= STATUS_HEADER + PARAMS.length * 8) {
+            state.playing = (view.getUint32(4, true) & 1) !== 0
+            state.slot = view.getInt32(8, true)
+            state.column = view.getFloat32(16, true)
+            const generation = view.getUint32(12, true)
+            if (generation !== state.generation && !state.requested && state.drag === null) {
+                state.requested = true
+                post(new Uint8Array([PAGE_REQUEST_PATTERNS]).buffer)
+            }
+            for (let id = 0; id < PARAMS.length; id++) {
+                if (state.drag?.id === id) {continue}
+                state.values[id] = view.getFloat64(STATUS_HEADER + id * 8, true)
+            }
+        } else if (type === PLUGIN_PATTERNS && view.byteLength >= PATTERNS_HEADER + PATTERNS * ROWS * ROW_BYTES) {
+            state.requested = false
+            if (state.drag !== null) {return}
+            state.generation = view.getUint32(4, true)
+            for (let slot = 0; slot < SLOTS; slot++) {state.sequence[slot] = view.getInt8(8 + slot)}
+            const selected = state.selected
+            const patterns = emptyPatterns()
+            let offset = PATTERNS_HEADER
+            for (let pattern = 0; pattern < PATTERNS; pattern++) {
+                for (let row = 0; row < ROWS; row++) {
+                    const count = Math.min(COLUMNS, view.getUint32(offset, true))
+                    for (let index = 0; index < count; index++) {
+                        const at = offset + 4 + index * 4
+                        patterns[pattern][row].push({start: view.getUint8(at), length: view.getUint8(at + 1),
+                            chance: view.getUint8(at + 2), ramp: view.getUint8(at + 3)})
+                    }
+                    offset += ROW_BYTES
+                }
+            }
+            state.patterns = patterns
+            state.selected = null
+            if (selected !== null) {
+                const found = patterns[selected.pattern][selected.row].find(block => block.start === selected.block.start)
+                if (found !== undefined) {state.selected = {...selected, block: found}}
+            }
+        }
+    })
+
+    // ---- layout: the 236 x 176 panel scaled into the page, drawn at the screen's pixel density ----
+
+    const resize = () => {
+        state.ratio = window.devicePixelRatio || 1
+        state.scale = Math.max(0.25, Math.min(window.innerWidth / WIDTH, window.innerHeight / HEIGHT))
+        root.style.transform = `translate(${(window.innerWidth - WIDTH * state.scale) / 2}px, ${(window.innerHeight - HEIGHT * state.scale) / 2}px) scale(${state.scale})`
+        canvas.width = Math.round(WIDTH * state.scale * state.ratio)
+        canvas.height = Math.round(HEIGHT * state.scale * state.ratio)
+    }
+    window.addEventListener("resize", resize)
+    resize()
+    post(new Uint8Array([PAGE_REQUEST_PATTERNS]).buffer)
+    state.requested = true
+    const frame = () => {
+        post(new Uint8Array([PAGE_POLL]).buffer)
+        if ((window.devicePixelRatio || 1) !== state.ratio) {resize()}
+        draw()
+        requestAnimationFrame(frame)
+    }
+    requestAnimationFrame(frame)
+</script>
+</body>
+</html>
