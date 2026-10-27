@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VERSION=0.37.0
+VERSION=0.37.2
 
 GEN="$(mktemp -d)"
 trap 'rm -rf "$GEN"' EXIT

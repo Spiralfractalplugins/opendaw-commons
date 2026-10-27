@@ -1,7 +1,7 @@
 # Spiral303, WebAssembly build
 
 The wasm half of Spiral303, a TB-303 acid line and step sequencer. Upstream source:
-<https://github.com/Spiralfractalplugins/spiral303>, tag `v0.37.0`. The native plugin is
+<https://github.com/Spiralfractalplugins/spiral303>, tag `v0.37.2`. The native plugin is
 built with JUCE; these files are the JUCE-free DSP core plus the CLAP glue the project
 already uses for its `wclap` build (`tools/build_wclap.sh` upstream), compiled here with
 Emscripten instead of the wasi-sdk. The DSP code is identical, so the sound is bit-exact
@@ -42,7 +42,7 @@ expects samples.
 
 ```
 git clone https://github.com/Spiralfractalplugins/spiral303.git
-git -C spiral303 checkout v0.37.0
+git -C spiral303 checkout v0.37.2
 # copy Source/wclap/*.{cpp,h}, the headers listed in build.sh, Source/core/,
 # Source/PluginParameters.h, presets/*.json, web/* and wclap/tools/embed_*.py
 # into this folder, keeping the paths.
