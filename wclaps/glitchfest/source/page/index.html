@@ -18,9 +18,9 @@
 <script>
     // message types, see plugin/glitchfest.cpp
     const PAGE_POLL = 1, PAGE_PARAM_BEGIN = 2, PAGE_PARAM_SET = 3, PAGE_PARAM_END = 4, PAGE_HOVER = 5, PAGE_SET_ROW = 6,
-        PAGE_SET_SEQUENCE = 7, PAGE_REQUEST_PATTERNS = 8
+        PAGE_SET_SEQUENCE = 7, PAGE_REQUEST_PATTERNS = 8, PAGE_SET_ORDER = 9
     const PLUGIN_STATUS = 1, PLUGIN_PATTERNS = 2
-    const INVALID_ID = 0xffffffff, STATUS_HEADER = 24, PATTERNS_HEADER = 16
+    const INVALID_ID = 0xffffffff, STATUS_HEADER = 24, PATTERNS_HEADER = 32
     const WIDTH = 236, HEIGHT = 176, LABEL = 40, COL = 6, COLUMNS = 32, ROW = 12, ROWS = 12, PATTERNS = 4, SLOTS = 8
     const STRIP = 14, ROWS_Y = STRIP + 2, BAR_Y = ROWS_Y + ROWS * ROW, SLOT = COLUMNS * COL / SLOTS, CELLS = 4, CELL = WIDTH / CELLS
     const ROW_BYTES = 4 + COLUMNS * 4
@@ -86,6 +86,7 @@
     const emptyPatterns = () => Array.from({length: PATTERNS}, () => Array.from({length: ROWS}, () => []))
     const state = {
         values: PARAMS.map(({value}) => value), patterns: emptyPatterns(), sequence: new Array(SLOTS).fill(0),
+        order: Array.from({length: ROWS}, (_, index) => index),
         generation: -1, requested: false, playing: false, slot: 0, column: 0,
         editPattern: 0, selectedRow: 0, selected: null, drag: null, hovered: INVALID_ID, scale: 1, ratio: 0
     }
@@ -117,6 +118,12 @@
         const message = new Uint8Array(8 + blocks.length * 4)
         message.set([PAGE_SET_ROW, 0, 0, 0, pattern, row, blocks.length, 0])
         blocks.forEach((block, index) => message.set([block.start, block.length, block.chance, block.ramp], 8 + index * 4))
+        post(message.buffer)
+    }
+    const postOrder = () => {
+        const message = new Uint8Array(4 + ROWS)
+        message[0] = PAGE_SET_ORDER
+        message.set(state.order, 4)
         post(message.buffer)
     }
     const postSequence = () => {
@@ -203,8 +210,9 @@
             context.fillText(pattern === -1 ? "-" : PATTERN_NAMES[pattern], x + SLOT / 2, STRIP / 2 + 0.5)
         })
         context.textAlign = "left"
-        for (let row = 0; row < ROWS; row++) {
-            const y = ROWS_Y + row * ROW
+        for (let position = 0; position < ROWS; position++) {
+            const y = ROWS_Y + position * ROW
+            const row = state.order[position]
             context.fillStyle = row === state.selectedRow ? COLORS.text : COLORS.label
             context.fillText(EFFECTS[row], 4, y + ROW / 2 + 0.5)
             for (let column = 0; column < COLUMNS; column++) {
@@ -214,7 +222,7 @@
         }
         const selected = selectedBlock()
         state.patterns[state.editPattern].forEach((blocks, row) => blocks.forEach(block => {
-            const x = LABEL + block.start * COL, y = ROWS_Y + row * ROW + 1, w = block.length * COL - 1, h = ROW - 2
+            const x = LABEL + block.start * COL, y = ROWS_Y + state.order.indexOf(row) * ROW + 1, w = block.length * COL - 1, h = ROW - 2
             const slope = Math.min(w / 2, block.ramp / 100 * w / 2)
             context.fillStyle = blockColor(0.4 + 0.6 * block.chance / 100)
             context.beginPath()
@@ -266,7 +274,7 @@
                 : {slot: Math.min(SLOTS - 1, Math.floor((x - LABEL) / SLOT))}
         }
         if (y >= ROWS_Y && y < BAR_Y) {
-            const row = Math.min(ROWS - 1, Math.floor((y - ROWS_Y) / ROW))
+            const row = state.order[Math.min(ROWS - 1, Math.floor((y - ROWS_Y) / ROW))]
             return x < LABEL ? {label: row} : {row, column: Math.min(COLUMNS - 1, Math.max(0, Math.floor((x - LABEL) / COL)))}
         }
         if (y >= BAR_Y) {return {cell: cells()[Math.min(CELLS - 1, Math.floor(x / CELL))]}}
@@ -314,6 +322,8 @@
         } else if (target.label !== undefined) {
             state.selectedRow = target.label
             state.selected = null
+            state.drag = {reorder: target.label}
+            canvas.setPointerCapture(event.pointerId)
         } else if (target.row !== undefined) {
             startGrid(target.row, target.column, event)
         } else if (target.cell !== undefined) {
@@ -326,9 +336,19 @@
         if (drag === null) {
             const target = hit(point)
             const id = target?.cell?.id
-            canvas.style.cursor = target === null ? "default" : target.cell !== undefined ? "ns-resize"
+            canvas.style.cursor = target === null ? "default" : target.cell !== undefined || target.label !== undefined ? "ns-resize"
                 : target.row !== undefined ? "crosshair" : "pointer"
             hover(id !== undefined ? id : INVALID_ID)
+            return
+        }
+        if (drag.reorder !== undefined) {
+            const from = state.order.indexOf(drag.reorder)
+            const to = Math.min(ROWS - 1, Math.max(0, Math.floor((point.y - ROWS_Y) / ROW)))
+            if (to !== from) {
+                state.order.splice(from, 1)
+                state.order.splice(to, 0, drag.reorder)
+                postOrder()
+            }
             return
         }
         const column = Math.min(COLUMNS - 1, Math.max(0, Math.floor((point.x - LABEL) / COL)))
@@ -462,6 +482,8 @@
             if (state.drag !== null) {return}
             state.generation = view.getUint32(4, true)
             for (let slot = 0; slot < SLOTS; slot++) {state.sequence[slot] = view.getInt8(8 + slot)}
+            const order = Array.from({length: ROWS}, (_, position) => view.getUint8(16 + position))
+            if (new Set(order).size === ROWS && order.every(row => row < ROWS)) {state.order = order}
             const selected = state.selected
             const patterns = emptyPatterns()
             let offset = PATTERNS_HEADER

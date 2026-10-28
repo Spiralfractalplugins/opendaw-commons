@@ -90,13 +90,14 @@ static const ParamDef DEFS[PARAM_COUNT] = {
 #define SLOTS 8
 #define HISTORY_SECONDS 20
 #define THROW_SECONDS 4
+#define FADE_SECONDS 0.005
 #define OUT_EVENTS 128
 #define GUI_WIDTH 236
 #define GUI_HEIGHT 176
 #define GUI_MIN_SCALE 1.0
 #define GUI_MAX_SCALE 3.0
 #define STATE_MAGIC 0x46544c47u
-#define STATE_VERSION 1u
+#define STATE_VERSION 2u
 
 // message types, see page/index.html
 #define PAGE_POLL 1
@@ -107,11 +108,12 @@ static const ParamDef DEFS[PARAM_COUNT] = {
 #define PAGE_SET_ROW 6
 #define PAGE_SET_SEQUENCE 7
 #define PAGE_REQUEST_PATTERNS 8
+#define PAGE_SET_ORDER 9
 #define PLUGIN_STATUS 1
 #define PLUGIN_PATTERNS 2
 #define STATUS_HEADER 24
 #define ROW_BYTES (4 + COLUMNS * 4)
-#define PATTERNS_HEADER 16
+#define PATTERNS_HEADER 32
 
 #define OPENDAW_PLUGIN_FEATURE_DEVICE_PANEL "opendaw:device-panel"
 #define OPENDAW_EXT_DEVICE_PANEL "opendaw.device-panel/1"
@@ -162,6 +164,7 @@ struct Glitchfest {
     double values[PARAM_COUNT];
     Pattern patterns[PATTERNS];
     int8_t sequence[SLOTS];
+    uint8_t order[ROWS];
     std::atomic<uint32_t> generation;
     uint32_t seen_generation;
     double sample_rate;
@@ -177,6 +180,8 @@ struct Glitchfest {
     int slot;
     double column;
     Lane lanes[ROWS];
+    Lane fading[ROWS];
+    double fade[ROWS];
     uint32_t random;
     uint32_t gui_width, gui_height;
     OutEvent out_events[OUT_EVENTS];
@@ -245,25 +250,24 @@ static bool valid_row(const Block *blocks, uint32_t count) {
     return true;
 }
 
+// every row exactly once
+static bool valid_order(const uint8_t *order) {
+    bool seen[ROWS] = {};
+    for (int position = 0; position < ROWS; position++) {
+        if (order[position] >= ROWS || seen[order[position]]) {return false;}
+        seen[order[position]] = true;
+    }
+    return true;
+}
+
+static void default_order(uint8_t *order) {for (int position = 0; position < ROWS; position++) {order[position] = static_cast<uint8_t>(position);}}
+
 static void store_row(Glitchfest *glitchfest, uint32_t pattern, uint32_t row, const Block *blocks, uint32_t count) {
     Row &target = glitchfest->patterns[pattern].rows[row];
     target.count = 0;
     std::memcpy(target.blocks, blocks, count * sizeof(Block));
     target.count = count;
     glitchfest->generation.fetch_add(1);
-}
-
-static void default_patterns(Glitchfest *glitchfest) {
-    std::memset(glitchfest->patterns, 0, sizeof(glitchfest->patterns));
-    const Block stutter[] = {{12, 4, 100, 0}, {30, 2, 100, 0}};
-    const Block reverse[] = {{20, 2, 100, 0}};
-    const Block tape[] = {{24, 4, 100, 0}};
-    const Block gate[] = {{4, 4, 100, 0}};
-    store_row(glitchfest, 0, E_STUTTER, stutter, 2);
-    store_row(glitchfest, 0, E_REVERSE, reverse, 1);
-    store_row(glitchfest, 0, E_TAPE, tape, 1);
-    store_row(glitchfest, 0, E_GATE, gate, 1);
-    std::memset(glitchfest->sequence, 0, sizeof(glitchfest->sequence));
 }
 
 // ---- the history every time effect reads from, written before it is read ----
@@ -312,6 +316,7 @@ static void clear_lanes(Glitchfest *glitchfest) {
         lane.key = -1;
         lane.gate = 1.0;
     }
+    for (double &fade: glitchfest->fade) {fade = 0.0;}
     glitchfest->column_index = -1;
 }
 
@@ -350,6 +355,10 @@ static void locate(Glitchfest *glitchfest, int64_t column_index) {
         }
         const int64_t key = (cycle * PATTERNS + pattern) * COLUMNS + found->start;
         if (key == lane.key) {continue;}
+        if (row <= E_PITCH && lane.amount > 1e-6) {
+            glitchfest->fading[row] = lane;
+            glitchfest->fade[row] = FADE_SECONDS * glitchfest->sample_rate;
+        }
         lane.key = key;
         lane.armed = next_random(glitchfest) * 100.0 < found->chance;
         lane.start_beat = static_cast<double>(cycle * COLUMNS + found->start) * width;
@@ -372,110 +381,168 @@ static void blend(double &left, double &right, double wet_left, double wet_right
     right += (wet_right - right) * amount;
 }
 
-static void run_effects(Glitchfest *glitchfest, double beat, double frames_per_beat, double &left, double &right) {
+// what a time effect plays for one lane, so a block that starts while the last one sounds can fade from it
+static void time_effect(Glitchfest *glitchfest, int row, Lane &lane, double beat, double frames_per_beat, double &wet_left,
+                        double &wet_right) {
     const double rate = glitchfest->sample_rate;
     const double now = static_cast<double>(glitchfest->clock);
     const double *values = glitchfest->values;
-    for (int row = 0; row < ROWS; row++) {
+    const double elapsed = std::fmax(0.0, (beat - lane.start_beat) * frames_per_beat);
+    const double length = std::fmax(1.0, lane.length_beats * frames_per_beat);
+    const double progress = clamp(elapsed / length, 0.0, 1.0);
+    const double start = now - elapsed;
+    switch (row) {
+        case E_STUTTER: {
+            const double slice = std::fmax(16.0, STUTTER_BEATS[stepped(glitchfest, P_STUTTER_DIV)] * frames_per_beat);
+            const double repeat = std::floor(elapsed / slice), offset = elapsed - repeat * slice;
+            read_history(glitchfest, start + offset, wet_left, wet_right);
+            const double gain = std::pow(1.0 - values[P_STUTTER_DECAY], repeat) * edge(offset, slice, 0.0015 * rate);
+            wet_left *= gain;
+            wet_right *= gain;
+            break;
+        }
+        case E_SHUFFLE: {
+            const double slice = std::fmax(16.0, SLICE_BEATS[stepped(glitchfest, P_SHUFFLE_SLICE)] * frames_per_beat);
+            const double bar = 4.0 * frames_per_beat;
+            const uint32_t slices = static_cast<uint32_t>(std::fmax(1.0, std::floor(bar / slice)));
+            const double index = std::floor(elapsed / slice), offset = elapsed - index * slice;
+            const uint32_t seed = static_cast<uint32_t>(stepped(glitchfest, P_SHUFFLE_SEED)) * 2654435761u;
+            const uint32_t pick = hash(seed ^ hash(static_cast<uint32_t>(index) * 40503u ^ static_cast<uint32_t>(lane.key))) % slices;
+            read_history(glitchfest, start - bar + pick * slice + offset, wet_left, wet_right);
+            const double gain = edge(offset, slice, 0.0015 * rate);
+            wet_left *= gain;
+            wet_right *= gain;
+            break;
+        }
+        case E_REVERSE: {
+            const double size = std::fmax(16.0, REVERSE_BEATS[stepped(glitchfest, P_REVERSE_SIZE)] * frames_per_beat);
+            const double index = std::floor(elapsed / size), offset = elapsed - index * size;
+            read_history(glitchfest, start + index * size - offset, wet_left, wet_right);
+            const double gain = edge(offset, size, values[P_REVERSE_FADE] * 0.001 * rate);
+            wet_left *= gain;
+            wet_right *= gain;
+            break;
+        }
+        case E_SCRATCH: {
+            const double depth = values[P_SCRATCH_DEPTH] * 0.5 * frames_per_beat;
+            const double phase = elapsed / frames_per_beat * values[P_SCRATCH_RATE];
+            read_history(glitchfest, start - depth * (1.0 - std::cos(TAU * phase)) * 0.5, wet_left, wet_right);
+                            break;
+        }
+        case E_FREEZE: {
+            const double size = std::fmax(16.0, values[P_FREEZE_SIZE] * 0.001 * rate);
+            double sum_left = 0.0, sum_right = 0.0;
+            for (int grain = 0; grain < 2; grain++) {
+                const double position = elapsed + grain * size * 0.5;
+                const int64_t index = static_cast<int64_t>(std::floor(position / size));
+                const double offset = position - static_cast<double>(index) * size;
+                if (index != lane.grain_index[grain]) {
+                    lane.grain_index[grain] = index;
+                    lane.grain_offset[grain] = next_random(glitchfest) * values[P_FREEZE_JITTER] * size * 4.0;
+                }
+                double grain_left, grain_right;
+                read_history(glitchfest, start - size - lane.grain_offset[grain] + offset, grain_left, grain_right);
+                const double window = std::sin(M_PI * offset / size);
+                sum_left += grain_left * window * window;
+                sum_right += grain_right * window * window;
+            }
+            wet_left = sum_left;
+            wet_right = sum_right;
+            break;
+        }
+        case E_TAPE: {
+            const double power = 0.3 + values[P_TAPE_CURVE] * 3.0;
+            const bool stop = stepped(glitchfest, P_TAPE_MODE) == 0;
+            const double travel = stop ? length * (1.0 - std::pow(1.0 - progress, power + 1.0)) / (power + 1.0)
+                : length * std::pow(progress, power + 1.0) / (power + 1.0);
+            const double speed = std::pow(stop ? 1.0 - progress : progress, power);
+            const double gain = std::fmin(1.0, std::fmin(speed * 20.0, (stop ? 1.0 - progress : progress) * 40.0));
+            read_history(glitchfest, start + travel, wet_left, wet_right);
+            wet_left *= gain;
+            wet_right *= gain;
+            break;
+        }
+        case E_PITCH: {
+            const double glide = values[P_PITCH_GLIDE];
+            const double semitones = values[P_PITCH_SEMI] * (glide > 0.0 ? std::fmin(1.0, progress / glide) : 1.0);
+            const double ratio = std::pow(2.0, semitones / 12.0);
+            const double window = 0.07 * rate;
+            lane.phase += 1.0 - ratio;
+            lane.phase -= std::floor(lane.phase / window) * window;
+            double sum_left = 0.0, sum_right = 0.0;
+            for (int tap = 0; tap < 2; tap++) {
+                const double delay = std::fmod(lane.phase + tap * window * 0.5, window);
+                double tap_left, tap_right;
+                read_history(glitchfest, now - delay, tap_left, tap_right);
+                const double shape = std::sin(M_PI * delay / window);
+                sum_left += tap_left * shape * shape;
+                sum_right += tap_right * shape * shape;
+            }
+            wet_left = sum_left;
+            wet_right = sum_right;
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+// the echo keeps sounding after its block, only the send follows the block
+static void throw_effect(Glitchfest *glitchfest, double send, double frames_per_beat, double &left, double &right) {
+    const uint32_t capacity = glitchfest->throw_capacity;
+    const double delay = clamp(THROW_BEATS[stepped(glitchfest, P_THROW_TIME)] * frames_per_beat, 1.0, capacity - 2.0);
+    const double read = static_cast<double>(glitchfest->throw_write) + capacity - delay;
+    const uint32_t index = static_cast<uint32_t>(read);
+    const double fraction = read - index;
+    const double feedback = glitchfest->values[P_THROW_FEEDBACK];
+    double echo[2];
+    for (int channel = 0; channel < 2; channel++) {
+        const float *line = glitchfest->throw_line[channel];
+        echo[channel] = line[index % capacity] + (line[(index + 1) % capacity] - line[index % capacity]) * fraction;
+        glitchfest->throw_damp[channel] += (echo[channel] - glitchfest->throw_damp[channel]) * 0.45;
+    }
+    const double input[2] = {left * send, right * send};
+    for (int channel = 0; channel < 2; channel++) {
+        glitchfest->throw_line[channel][glitchfest->throw_write] = static_cast<float>(std::tanh(input[channel] + glitchfest->throw_damp[channel] * feedback));
+    }
+    glitchfest->throw_write = (glitchfest->throw_write + 1) % capacity;
+    left += echo[0];
+    right += echo[1];
+}
+
+static void run_effects(Glitchfest *glitchfest, double beat, double frames_per_beat, double &left, double &right) {
+    const double rate = glitchfest->sample_rate;
+    const double *values = glitchfest->values;
+    for (int position = 0; position < ROWS; position++) {
+        const int row = glitchfest->order[position] < ROWS ? glitchfest->order[position] : position;
         Lane &lane = glitchfest->lanes[row];
         const double amount = lane.amount;
-        if (row == E_THROW) {break;}
+        if (row == E_THROW) {
+            throw_effect(glitchfest, amount, frames_per_beat, left, right);
+            continue;
+        }
         if (amount < 1e-6) {
             if (row == E_FILTER) {lane.ic1[0] = lane.ic1[1] = lane.ic2[0] = lane.ic2[1] = 0.0;}
             if (row == E_GATE) {lane.gate = 1.0;}
             continue;
         }
         const double elapsed = std::fmax(0.0, (beat - lane.start_beat) * frames_per_beat);
-        const double length = std::fmax(1.0, lane.length_beats * frames_per_beat);
-        const double progress = clamp(elapsed / length, 0.0, 1.0);
-        const double start = now - elapsed;
-        double wet_left = left, wet_right = right;
+        const double progress = clamp(elapsed / std::fmax(1.0, lane.length_beats * frames_per_beat), 0.0, 1.0);
+        if (row <= E_PITCH) {
+            double wet_left, wet_right;
+            time_effect(glitchfest, row, lane, beat, frames_per_beat, wet_left, wet_right);
+            if (glitchfest->fade[row] > 0.0) {
+                double old_left, old_right;
+                time_effect(glitchfest, row, glitchfest->fading[row], beat, frames_per_beat, old_left, old_right);
+                const double weight = glitchfest->fade[row] / (FADE_SECONDS * rate);
+                wet_left += (old_left - wet_left) * weight;
+                wet_right += (old_right - wet_right) * weight;
+                glitchfest->fade[row] -= 1.0;
+            }
+            blend(left, right, wet_left, wet_right, amount);
+            continue;
+        }
         switch (row) {
-            case E_STUTTER: {
-                const double slice = std::fmax(16.0, STUTTER_BEATS[stepped(glitchfest, P_STUTTER_DIV)] * frames_per_beat);
-                const double repeat = std::floor(elapsed / slice), offset = elapsed - repeat * slice;
-                read_history(glitchfest, start + offset, wet_left, wet_right);
-                const double gain = std::pow(1.0 - values[P_STUTTER_DECAY], repeat) * edge(offset, slice, 0.0015 * rate);
-                blend(left, right, wet_left * gain, wet_right * gain, amount);
-                break;
-            }
-            case E_SHUFFLE: {
-                const double slice = std::fmax(16.0, SLICE_BEATS[stepped(glitchfest, P_SHUFFLE_SLICE)] * frames_per_beat);
-                const double bar = 4.0 * frames_per_beat;
-                const uint32_t slices = static_cast<uint32_t>(std::fmax(1.0, std::floor(bar / slice)));
-                const double index = std::floor(elapsed / slice), offset = elapsed - index * slice;
-                const uint32_t seed = static_cast<uint32_t>(stepped(glitchfest, P_SHUFFLE_SEED)) * 2654435761u;
-                const uint32_t pick = hash(seed ^ hash(static_cast<uint32_t>(index) * 40503u ^ static_cast<uint32_t>(lane.key))) % slices;
-                read_history(glitchfest, start - bar + pick * slice + offset, wet_left, wet_right);
-                const double gain = edge(offset, slice, 0.0015 * rate);
-                blend(left, right, wet_left * gain, wet_right * gain, amount);
-                break;
-            }
-            case E_REVERSE: {
-                const double size = std::fmax(16.0, REVERSE_BEATS[stepped(glitchfest, P_REVERSE_SIZE)] * frames_per_beat);
-                const double index = std::floor(elapsed / size), offset = elapsed - index * size;
-                read_history(glitchfest, start + index * size - offset, wet_left, wet_right);
-                const double gain = edge(offset, size, values[P_REVERSE_FADE] * 0.001 * rate);
-                blend(left, right, wet_left * gain, wet_right * gain, amount);
-                break;
-            }
-            case E_SCRATCH: {
-                const double depth = values[P_SCRATCH_DEPTH] * 0.5 * frames_per_beat;
-                const double phase = elapsed / frames_per_beat * values[P_SCRATCH_RATE];
-                read_history(glitchfest, start - depth * (1.0 - std::cos(TAU * phase)) * 0.5, wet_left, wet_right);
-                blend(left, right, wet_left, wet_right, amount);
-                break;
-            }
-            case E_FREEZE: {
-                const double size = std::fmax(16.0, values[P_FREEZE_SIZE] * 0.001 * rate);
-                double sum_left = 0.0, sum_right = 0.0;
-                for (int grain = 0; grain < 2; grain++) {
-                    const double position = elapsed + grain * size * 0.5;
-                    const int64_t index = static_cast<int64_t>(std::floor(position / size));
-                    const double offset = position - static_cast<double>(index) * size;
-                    if (index != lane.grain_index[grain]) {
-                        lane.grain_index[grain] = index;
-                        lane.grain_offset[grain] = next_random(glitchfest) * values[P_FREEZE_JITTER] * size * 4.0;
-                    }
-                    double grain_left, grain_right;
-                    read_history(glitchfest, start - size - lane.grain_offset[grain] + offset, grain_left, grain_right);
-                    const double window = std::sin(M_PI * offset / size);
-                    sum_left += grain_left * window * window;
-                    sum_right += grain_right * window * window;
-                }
-                blend(left, right, sum_left, sum_right, amount);
-                break;
-            }
-            case E_TAPE: {
-                const double power = 0.3 + values[P_TAPE_CURVE] * 3.0;
-                const bool stop = stepped(glitchfest, P_TAPE_MODE) == 0;
-                const double travel = stop ? length * (1.0 - std::pow(1.0 - progress, power + 1.0)) / (power + 1.0)
-                    : length * std::pow(progress, power + 1.0) / (power + 1.0);
-                const double speed = std::pow(stop ? 1.0 - progress : progress, power);
-                const double gain = std::fmin(1.0, std::fmin(speed * 20.0, (stop ? 1.0 - progress : progress) * 40.0));
-                read_history(glitchfest, start + travel, wet_left, wet_right);
-                blend(left, right, wet_left * gain, wet_right * gain, amount);
-                break;
-            }
-            case E_PITCH: {
-                const double glide = values[P_PITCH_GLIDE];
-                const double semitones = values[P_PITCH_SEMI] * (glide > 0.0 ? std::fmin(1.0, progress / glide) : 1.0);
-                const double ratio = std::pow(2.0, semitones / 12.0);
-                const double window = 0.07 * rate;
-                lane.phase += 1.0 - ratio;
-                lane.phase -= std::floor(lane.phase / window) * window;
-                double sum_left = 0.0, sum_right = 0.0;
-                for (int tap = 0; tap < 2; tap++) {
-                    const double delay = std::fmod(lane.phase + tap * window * 0.5, window);
-                    double tap_left, tap_right;
-                    read_history(glitchfest, now - delay, tap_left, tap_right);
-                    const double shape = std::sin(M_PI * delay / window);
-                    sum_left += tap_left * shape * shape;
-                    sum_right += tap_right * shape * shape;
-                }
-                blend(left, right, sum_left, sum_right, amount);
-                break;
-            }
             case E_CRUSH: {
                 const double steps = std::pow(2.0, values[P_CRUSH_BITS] - 1.0);
                 if (lane.phase <= 0.0) {lane.phase = 1.0;}
@@ -530,27 +597,6 @@ static void run_effects(Glitchfest *glitchfest, double beat, double frames_per_b
                 break;
         }
     }
-    // the echo keeps sounding after its block, only the send follows the block
-    const double send = glitchfest->lanes[E_THROW].amount;
-    const uint32_t capacity = glitchfest->throw_capacity;
-    const double delay = clamp(THROW_BEATS[stepped(glitchfest, P_THROW_TIME)] * frames_per_beat, 1.0, capacity - 2.0);
-    const double read = static_cast<double>(glitchfest->throw_write) + capacity - delay;
-    const uint32_t index = static_cast<uint32_t>(read);
-    const double fraction = read - index;
-    const double feedback = glitchfest->values[P_THROW_FEEDBACK];
-    double echo[2];
-    for (int channel = 0; channel < 2; channel++) {
-        const float *line = glitchfest->throw_line[channel];
-        echo[channel] = line[index % capacity] + (line[(index + 1) % capacity] - line[index % capacity]) * fraction;
-        glitchfest->throw_damp[channel] += (echo[channel] - glitchfest->throw_damp[channel]) * 0.45;
-    }
-    const double input[2] = {left * send, right * send};
-    for (int channel = 0; channel < 2; channel++) {
-        glitchfest->throw_line[channel][glitchfest->throw_write] = static_cast<float>(std::tanh(input[channel] + glitchfest->throw_damp[channel] * feedback));
-    }
-    glitchfest->throw_write = (glitchfest->throw_write + 1) % capacity;
-    left += echo[0];
-    right += echo[1];
 }
 
 // one frame: history in, the lanes on the transport, the effects, the mix
@@ -839,7 +885,7 @@ static const clap_plugin_params_t params = {
     params_count, params_get_info, params_get_value, params_value_to_text, params_text_to_value, params_flush
 };
 
-// ---- state: magic, version, sizes, the parameters, the sequence, then every row as a count and its blocks ----
+// ---- state: magic, version, sizes, the parameters, the sequence, every row as a count and its blocks, the order ----
 
 static bool write_all(const clap_ostream_t *stream, const void *data, uint64_t size) {
     const uint8_t *bytes = static_cast<const uint8_t *>(data);
@@ -875,13 +921,13 @@ static bool state_save(const clap_plugin_t *plugin, const clap_ostream_t *stream
             if (!write_all(stream, &count, 1) || !write_all(stream, row.blocks, count * sizeof(Block))) {return false;}
         }
     }
-    return true;
+    return write_all(stream, glitchfest->order, ROWS);
 }
 
 static bool state_load(const clap_plugin_t *plugin, const clap_istream_t *stream) {
     Glitchfest *glitchfest = glitchfest_of(plugin);
     uint32_t header[7];
-    if (!read_all(stream, header, sizeof(header)) || header[0] != STATE_MAGIC || header[1] != STATE_VERSION) {return false;}
+    if (!read_all(stream, header, sizeof(header)) || header[0] != STATE_MAGIC || header[1] < 1 || header[1] > STATE_VERSION) {return false;}
     if (header[3] != ROWS || header[4] != PATTERNS || header[5] != COLUMNS || header[6] != SLOTS) {return false;}
     const uint32_t param_count = header[2];
     double values[PARAM_COUNT];
@@ -903,8 +949,12 @@ static bool state_load(const clap_plugin_t *plugin, const clap_istream_t *stream
             row.count = count;
         }
     }
+    uint8_t order[ROWS];
+    default_order(order);
+    if (header[1] >= 2 && (!read_all(stream, order, ROWS) || !valid_order(order))) {return false;}
     std::memcpy(glitchfest->values, values, sizeof(values));
     std::memcpy(glitchfest->sequence, sequence, sizeof(sequence));
+    std::memcpy(glitchfest->order, order, sizeof(order));
     for (uint32_t pattern = 0; pattern < PATTERNS; pattern++) {
         for (uint32_t row = 0; row < ROWS; row++) {
             const Row &source = patterns[pattern].rows[row];
@@ -954,6 +1004,7 @@ static void send_patterns(Glitchfest *glitchfest) {
     const uint32_t generation = glitchfest->generation.load();
     std::memcpy(message + 4, &generation, 4);
     std::memcpy(message + 8, glitchfest->sequence, SLOTS);
+    std::memcpy(message + 16, glitchfest->order, ROWS);
     uint8_t *cursor = message + PATTERNS_HEADER;
     for (const Pattern &pattern: glitchfest->patterns) {
         for (const Row &row: pattern.rows) {
@@ -1025,6 +1076,16 @@ static bool webview_receive(const clap_plugin_t *plugin, const void *buffer, uin
             std::memcpy(sequence, bytes + 4, SLOTS);
             for (int8_t slot: sequence) {if (slot < -1 || slot >= PATTERNS) {return false;}}
             std::memcpy(glitchfest->sequence, sequence, SLOTS);
+            glitchfest->generation.fetch_add(1);
+            mark_dirty(glitchfest);
+            return true;
+        }
+        case PAGE_SET_ORDER: {
+            if (size < 4 + ROWS) {return false;}
+            uint8_t order[ROWS];
+            std::memcpy(order, bytes + 4, ROWS);
+            if (!valid_order(order)) {return false;}
+            std::memcpy(glitchfest->order, order, ROWS);
             glitchfest->generation.fetch_add(1);
             mark_dirty(glitchfest);
             return true;
@@ -1142,7 +1203,9 @@ static const clap_plugin_t *create(const clap_plugin_factory_t *factory, const c
     Glitchfest *glitchfest = new(memory) Glitchfest();
     glitchfest->host = host;
     for (clap_id id = 0; id < PARAM_COUNT; id++) {glitchfest->values[id] = DEFS[id].value;}
-    default_patterns(glitchfest);
+    std::memset(glitchfest->patterns, 0, sizeof(glitchfest->patterns));
+    std::memset(glitchfest->sequence, 0, sizeof(glitchfest->sequence));
+    default_order(glitchfest->order);
     clear_lanes(glitchfest);
     glitchfest->sample_rate = 48000.0;
     glitchfest->tempo = 120.0;
