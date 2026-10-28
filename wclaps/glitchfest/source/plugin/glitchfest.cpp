@@ -92,7 +92,7 @@ static const ParamDef DEFS[PARAM_COUNT] = {
 #define THROW_SECONDS 4
 #define FADE_SECONDS 0.005
 #define OUT_EVENTS 128
-#define GUI_WIDTH 236
+#define GUI_WIDTH 244
 #define GUI_HEIGHT 176
 #define GUI_MIN_SCALE 1.0
 #define GUI_MAX_SCALE 3.0
@@ -1100,7 +1100,7 @@ static bool webview_receive(const clap_plugin_t *plugin, const void *buffer, uin
 
 static const clap_plugin_webview_t webview = {webview_get_uri, webview_get_resource, webview_receive};
 
-// gui: only the webview api, the host owns the window, the panel's 236 x 176 scaled 1 to 3 times
+// gui: only the webview api, the host owns the window, the panel's 244 x 176 scaled 1 to 3 times
 static bool gui_is_api_supported(const clap_plugin_t *plugin, const char *api, bool is_floating) {
     (void) plugin; (void) is_floating;
     return std::strcmp(api, CLAP_WINDOW_API_WEBVIEW) == 0;
@@ -1173,7 +1173,7 @@ static const clap_plugin_gui_t gui = {
     gui_hide
 };
 
-// device panel: the window's page, 236 wide at the panel's 176
+// device panel: the window's page, 244 wide at the panel's 176
 static bool panel_get_width(const clap_plugin_t *plugin, uint32_t height, uint32_t *width) {
     (void) plugin;
     *width = static_cast<uint32_t>(std::lround(static_cast<double>(height) * GUI_WIDTH / GUI_HEIGHT));

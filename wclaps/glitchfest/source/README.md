@@ -1,6 +1,6 @@
 # Glitchfest
 
-A glitch effect as a WebCLAP audio effect. The page is 236 x 176, the size of openDAW's device panel (feature
+A glitch effect as a WebCLAP audio effect. The page is 244 x 176, the size of openDAW's device panel (feature
 `opendaw:device-panel`, extension `opendaw.device-panel/1`), every other host shows it in a window, 1 to 3 times as
 large.
 

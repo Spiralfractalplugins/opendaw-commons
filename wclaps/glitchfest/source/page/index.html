@@ -7,8 +7,8 @@
     <style>
         html, body {margin: 0; height: 100%; overflow: hidden; background: transparent}
         body {user-select: none; -webkit-user-select: none; font-family: system-ui, sans-serif}
-        #root {position: absolute; left: 0; top: 0; width: 236px; height: 176px; transform-origin: 0 0}
-        canvas {position: absolute; left: 0; top: 0; width: 236px; height: 176px; display: block; touch-action: none}
+        #root {position: absolute; left: 0; top: 0; width: 244px; height: 176px; transform-origin: 0 0}
+        canvas {position: absolute; left: 0; top: 0; width: 244px; height: 176px; display: block; touch-action: none}
     </style>
 </head>
 <body>
@@ -21,7 +21,7 @@
         PAGE_SET_SEQUENCE = 7, PAGE_REQUEST_PATTERNS = 8, PAGE_SET_ORDER = 9
     const PLUGIN_STATUS = 1, PLUGIN_PATTERNS = 2
     const INVALID_ID = 0xffffffff, STATUS_HEADER = 24, PATTERNS_HEADER = 32
-    const WIDTH = 236, HEIGHT = 176, LABEL = 40, COL = 6, COLUMNS = 32, ROW = 12, ROWS = 12, PATTERNS = 4, SLOTS = 8
+    const WIDTH = 244, HEIGHT = 176, LABEL = 48, COL = 6, COLUMNS = 32, ROW = 12, ROWS = 12, PATTERNS = 4, SLOTS = 8
     const STRIP = 14, ROWS_Y = STRIP + 2, BAR_Y = ROWS_Y + ROWS * ROW, SLOT = COLUMNS * COL / SLOTS, CELLS = 4, CELL = WIDTH / CELLS
     const ROW_BYTES = 4 + COLUMNS * 4
     const COLORS = {
@@ -507,7 +507,7 @@
         }
     })
 
-    // ---- layout: the 236 x 176 panel scaled into the page, drawn at the screen's pixel density ----
+    // ---- layout: the 244 x 176 panel scaled into the page, drawn at the screen's pixel density ----
 
     const resize = () => {
         state.ratio = window.devicePixelRatio || 1
